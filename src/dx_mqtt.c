@@ -20,13 +20,13 @@
 #include "mqtt_pal.h"
 
 // System includes for socket operations
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <netinet/in.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/types.h>
-#include <sys/select.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
 
 // Internal state management
 static struct mqtt_client _client;
@@ -49,10 +49,6 @@ static char _last_error[256] = {0};
 
 // Retry configuration
 static DX_MQTT_CONFIG _saved_config = {0};
-static int _retry_count = 0;
-static int _max_retries = 5;
-static int _base_retry_delay_ms = 1000;  // Start with 1 second
-static int _max_retry_delay_ms = 30000;  // Max 30 seconds
 
 // Function prototypes
 static void publish_callback(void **unused, struct mqtt_response_publish *published);
@@ -60,10 +56,7 @@ static void *client_refresher(void *client);
 static bool cleanup_connection(void);
 static void set_last_error(const char *format, ...);
 static int open_nb_socket(const char *addr, const char *port);
-static bool attempt_reconnect(void);
 static void save_connection_config(const DX_MQTT_CONFIG *config);
-static int calculate_retry_delay(int retry_attempt);
-static bool is_retriable_error(void);
 
 /// <summary>
 /// MQTT publish callback - called when a message is received
@@ -117,22 +110,7 @@ static void *client_refresher(void *client)
                 set_last_error("MQTT sync failed: %s", mqtt_error_str(_client.error));
                 _is_connected = false;
                 dx_Log_Debug("DX MQTT: Connection lost in background thread\n");
-                
-                // Attempt reconnection if error is retriable
-                if (is_retriable_error() && _retry_count < _max_retries)
-                {
-                    dx_Log_Debug("DX MQTT: Attempting to reconnect (attempt %d/%d)\n", _retry_count + 1, _max_retries);
-                    if (attempt_reconnect())
-                    {
-                        dx_Log_Debug("DX MQTT: Reconnection successful\n");
-                        continue;
-                    }
-                }
-                else
-                {
-                    dx_Log_Debug("DX MQTT: Max retries exceeded or non-retriable error - stopping reconnection attempts\n");
-                    break;
-                }
+                break; // Exit on connection loss
             }
 
             // Check for any client errors that might have occurred
@@ -141,44 +119,14 @@ static void *client_refresher(void *client)
                 set_last_error("MQTT client error: %s", mqtt_error_str(_client.error));
                 _is_connected = false;
                 dx_Log_Debug("DX MQTT: Client error detected in background thread\n");
-                
-                // Attempt reconnection if error is retriable
-                if (is_retriable_error() && _retry_count < _max_retries)
-                {
-                    dx_Log_Debug("DX MQTT: Attempting to reconnect due to client error (attempt %d/%d)\n", _retry_count + 1, _max_retries);
-                    if (attempt_reconnect())
-                    {
-                        dx_Log_Debug("DX MQTT: Reconnection successful after client error\n");
-                        continue;
-                    }
-                }
-                else
-                {
-                    dx_Log_Debug("DX MQTT: Max retries exceeded or non-retriable client error - stopping\n");
-                    break;
-                }
+                break; // Exit on client error
             }
-
-            // Reset retry count on successful operation
-            _retry_count = 0;
         }
         else
         {
-            // Connection lost - attempt to reconnect
-            if (_retry_count < _max_retries)
-            {
-                dx_Log_Debug("DX MQTT: Connection lost - attempting reconnect (attempt %d/%d)\n", _retry_count + 1, _max_retries);
-                if (attempt_reconnect())
-                {
-                    dx_Log_Debug("DX MQTT: Reconnection successful\n");
-                    continue;
-                }
-            }
-            else
-            {
-                dx_Log_Debug("DX MQTT: Max reconnection attempts exceeded\n");
-                break;
-            }
+            // Connection lost - exit
+            dx_Log_Debug("DX MQTT: Connection lost - stopping background processing\n");
+            break;
         }
 
         // Sleep for 100ms between processing cycles
@@ -263,12 +211,9 @@ bool dx_mqttConnect(const DX_MQTT_CONFIG *config, DX_MQTT_MESSAGE_RECEIVED_HANDL
     // Store message handler and context
     _message_handler = message_handler;
     _user_context    = context;
-    
+
     // Save configuration for potential retries
     save_connection_config(config);
-    
-    // Reset retry counter on new connection attempt
-    _retry_count = 0;
 
     // Set defaults
     const char *port      = config->port ? config->port : "1883";
@@ -626,143 +571,42 @@ static void save_connection_config(const DX_MQTT_CONFIG *config)
     static char client_id_buffer[256];
     static char username_buffer[256];
     static char password_buffer[256];
-    
-    if (config->hostname) {
+
+    if (config->hostname)
+    {
         strncpy(hostname_buffer, config->hostname, sizeof(hostname_buffer) - 1);
         hostname_buffer[sizeof(hostname_buffer) - 1] = '\0';
-        _saved_config.hostname = hostname_buffer;
+        _saved_config.hostname                       = hostname_buffer;
     }
-    
-    if (config->port) {
+
+    if (config->port)
+    {
         strncpy(port_buffer, config->port, sizeof(port_buffer) - 1);
         port_buffer[sizeof(port_buffer) - 1] = '\0';
-        _saved_config.port = port_buffer;
+        _saved_config.port                   = port_buffer;
     }
-    
-    if (config->client_id) {
+
+    if (config->client_id)
+    {
         strncpy(client_id_buffer, config->client_id, sizeof(client_id_buffer) - 1);
         client_id_buffer[sizeof(client_id_buffer) - 1] = '\0';
-        _saved_config.client_id = client_id_buffer;
+        _saved_config.client_id                        = client_id_buffer;
     }
-    
-    if (config->username) {
+
+    if (config->username)
+    {
         strncpy(username_buffer, config->username, sizeof(username_buffer) - 1);
         username_buffer[sizeof(username_buffer) - 1] = '\0';
-        _saved_config.username = username_buffer;
+        _saved_config.username                       = username_buffer;
     }
-    
-    if (config->password) {
+
+    if (config->password)
+    {
         strncpy(password_buffer, config->password, sizeof(password_buffer) - 1);
         password_buffer[sizeof(password_buffer) - 1] = '\0';
-        _saved_config.password = password_buffer;
+        _saved_config.password                       = password_buffer;
     }
-    
+
     _saved_config.keep_alive_seconds = config->keep_alive_seconds;
-    _saved_config.clean_session = config->clean_session;
-}
-
-/// <summary>
-/// Calculate retry delay with exponential backoff
-/// </summary>
-/// <param name="retry_attempt">Current retry attempt number (0-based)</param>
-/// <returns>Delay in milliseconds</returns>
-static int calculate_retry_delay(int retry_attempt)
-{
-    // Exponential backoff: base_delay * 2^retry_attempt, capped at max_delay
-    int delay = _base_retry_delay_ms * (1 << retry_attempt);
-    return delay > _max_retry_delay_ms ? _max_retry_delay_ms : delay;
-}
-
-/// <summary>
-/// Check if the current error is retriable
-/// </summary>
-/// <returns>True if error is retriable, false otherwise</returns>
-static bool is_retriable_error(void)
-{
-    // Most network errors are retriable
-    switch (_client.error) {
-        case MQTT_ERROR_SOCKET_ERROR:
-        case MQTT_ERROR_SEND_BUFFER_IS_FULL:
-        case MQTT_ERROR_RECV_BUFFER_TOO_SMALL:
-        case MQTT_ERROR_ACK_OF_UNKNOWN:
-            return true;
-        case MQTT_ERROR_CONNECTION_REFUSED:
-        case MQTT_ERROR_SUBSCRIBE_FAILED:
-            return false; // Authentication/authorization errors are typically not retriable
-        default:
-            return true; // Default to retriable for unknown errors
-    }
-}
-
-/// <summary>
-/// Attempt to reconnect to the MQTT broker
-/// </summary>
-/// <returns>True if reconnection successful, false otherwise</returns>
-static bool attempt_reconnect(void)
-{
-    if (_saved_config.hostname == NULL) {
-        set_last_error("No saved configuration for reconnection");
-        return false;
-    }
-    
-    // Calculate delay for this retry attempt
-    int delay_ms = calculate_retry_delay(_retry_count);
-    dx_Log_Debug("DX MQTT: Waiting %d ms before retry attempt %d\n", delay_ms, _retry_count + 1);
-    
-    // Wait before retry
-    usleep(delay_ms * 1000);
-    
-    _retry_count++;
-    
-    // Clean up existing connection
-    if (_sockfd != -1) {
-        close(_sockfd);
-        _sockfd = -1;
-    }
-    
-    // Set defaults
-    const char *port = _saved_config.port ? _saved_config.port : "1883";
-    uint16_t keep_alive = _saved_config.keep_alive_seconds > 0 ? _saved_config.keep_alive_seconds : 400;
-    
-    // Open socket connection
-    _sockfd = open_nb_socket(_saved_config.hostname, port);
-    if (_sockfd == -1) {
-        set_last_error("Reconnect: Failed to open socket to %s:%s", _saved_config.hostname, port);
-        return false;
-    }
-    
-    // Initialize MQTT client
-    mqtt_init(&_client, _sockfd, _send_buffer, sizeof(_send_buffer), _recv_buffer, sizeof(_recv_buffer), publish_callback);
-    
-    // Prepare connection flags
-    uint8_t connect_flags = 0;
-    if (_saved_config.clean_session) {
-        connect_flags |= MQTT_CONNECT_CLEAN_SESSION;
-    }
-    
-    // Connect to broker
-    if (mqtt_connect(&_client, _saved_config.client_id, _saved_config.username, _saved_config.password, 
-                     _saved_config.password ? strlen(_saved_config.password) : 0, NULL, NULL, connect_flags, keep_alive) != MQTT_OK) {
-        set_last_error("Reconnect: MQTT connect failed: %s", mqtt_error_str(_client.error));
-        if (_sockfd != -1) {
-            close(_sockfd);
-            _sockfd = -1;
-        }
-        return false;
-    }
-    
-    // Check for connection errors
-    if (_client.error != MQTT_OK) {
-        set_last_error("Reconnect: MQTT connection error: %s", mqtt_error_str(_client.error));
-        if (_sockfd != -1) {
-            close(_sockfd);
-            _sockfd = -1;
-        }
-        return false;
-    }
-    
-    _is_connected = true;
-    dx_Log_Debug("DX MQTT: Successfully reconnected to %s:%s\n", _saved_config.hostname, port);
-    
-    return true;
+    _saved_config.clean_session      = config->clean_session;
 }
