@@ -18,6 +18,8 @@ typedef struct {
     const char* mqtt_host;
     const char* mqtt_port;
     const char* mqtt_client_id;
+    const char* mqtt_username;
+    const char* mqtt_password;
     const char* network_interface;
     ConnectionType connectionType;
 } DX_USER_CONFIG;
