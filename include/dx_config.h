@@ -7,21 +7,17 @@
 // Stub version - Azure IoT support has been removed
 
 /// <summary>
-/// Connection types to use when connecting to the Azure IoT Hub.
+/// Connection types - simplified for MQTT-only operation
 /// </summary>
 typedef enum {
     DX_CONNECTION_TYPE_NOT_DEFINED = 0,
-    DX_CONNECTION_TYPE_DPS = 1,
-    DX_CONNECTION_TYPE_HOSTNAME = 2,
-    DX_CONNECTION_TYPE_STRING = 3
+    DX_CONNECTION_TYPE_MQTT = 1
 } ConnectionType;
 
 typedef struct {
-    const char* idScope;
-    const char* device_id;
-    const char* device_key;
-    const char* hostname;
-    const char* connection_string;
+    const char* mqtt_host;
+    const char* mqtt_port;
+    const char* mqtt_client_id;
     const char* network_interface;
     ConnectionType connectionType;
 } DX_USER_CONFIG;
