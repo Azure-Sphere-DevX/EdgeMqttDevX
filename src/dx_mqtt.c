@@ -110,7 +110,6 @@ static void *client_refresher(void *client)
                 set_last_error("MQTT sync failed: %s", mqtt_error_str(_client.error));
                 _is_connected = false;
                 dx_Log_Debug("DX MQTT: Connection lost in background thread\n");
-                break; // Exit on connection loss
             }
 
             // Check for any client errors that might have occurred
@@ -119,14 +118,7 @@ static void *client_refresher(void *client)
                 set_last_error("MQTT client error: %s", mqtt_error_str(_client.error));
                 _is_connected = false;
                 dx_Log_Debug("DX MQTT: Client error detected in background thread\n");
-                break; // Exit on client error
             }
-        }
-        else
-        {
-            // Connection lost - exit
-            dx_Log_Debug("DX MQTT: Connection lost - stopping background processing\n");
-            break;
         }
 
         // Sleep for 100ms between processing cycles
