@@ -57,58 +57,30 @@ bool dx_gpioOpen(DX_GPIO_BINDING *gpio_binding)
         }
     }
 
-    struct gpiod_request_config *req_cfg = gpiod_request_config_new();
-    if (!req_cfg)
+    struct gpiod_line *line = gpiod_chip_get_line(gpio_chips[gpio_binding->chip_number].chip, gpio_binding->line_number);
+    if (!line)
     {
         close_chip(gpio_binding->chip_number);
         return false;
     }
-    
-    gpiod_request_config_set_consumer(req_cfg, gpio_binding->name);
 
-    struct gpiod_line_config *line_cfg = gpiod_line_config_new();
-    if (!line_cfg)
-    {
-        gpiod_request_config_free(req_cfg);
-        close_chip(gpio_binding->chip_number);
-        return false;
-    }
-
-    struct gpiod_line_settings *settings = gpiod_line_settings_new();
-    if (!settings)
-    {
-        gpiod_line_config_free(line_cfg);
-        gpiod_request_config_free(req_cfg);
-        close_chip(gpio_binding->chip_number);
-        return false;
-    }
-
+    int ret;
     if (DX_GPIO_INPUT == gpio_binding->direction)
     {
-        gpiod_line_settings_set_direction(settings, GPIOD_LINE_DIRECTION_INPUT);
+        ret = gpiod_line_request_input(line, gpio_binding->name);
     }
     else
     {
-        gpiod_line_settings_set_direction(settings, GPIOD_LINE_DIRECTION_OUTPUT);
-        gpiod_line_settings_set_output_value(settings, (int)gpio_binding->initial_state);
+        ret = gpiod_line_request_output(line, gpio_binding->name, (int)gpio_binding->initial_state);
     }
-
-    unsigned int offset = gpio_binding->line_number;
-    gpiod_line_config_add_line_settings(line_cfg, &offset, 1, settings);
     
-    struct gpiod_line_request *request = gpiod_chip_request_lines(gpio_chips[gpio_binding->chip_number].chip, req_cfg, line_cfg);
-    
-    gpiod_line_settings_free(settings);
-    gpiod_request_config_free(req_cfg);
-    gpiod_line_config_free(line_cfg);
-    
-    if (!request)
+    if (ret < 0)
     {
         close_chip(gpio_binding->chip_number);
         return false;
     }
 
-    gpio_binding->__line_handle = request;
+    gpio_binding->__line_handle = line;
     gpio_chips[gpio_binding->chip_number].count++;
 
     return true;
@@ -118,7 +90,7 @@ bool dx_gpioClose(DX_GPIO_BINDING *gpio_binding)
 {
     if (gpio_binding->__line_handle)
     {
-        gpiod_line_request_release((struct gpiod_line_request *)gpio_binding->__line_handle);
+        gpiod_line_release((struct gpiod_line *)gpio_binding->__line_handle);
 
         gpio_binding->__line_handle = NULL;
 
@@ -146,10 +118,9 @@ bool dx_gpioStateSet(DX_GPIO_BINDING *gpio_binding, bool state)
         return false;
     }
 
-    unsigned int offset = gpio_binding->line_number;
-    enum gpiod_line_value value = state ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE;
+    int value = state ? 1 : 0;
     
-    return 0 == gpiod_line_request_set_value((struct gpiod_line_request *)gpio_binding->__line_handle, offset, value);
+    return 0 == gpiod_line_set_value((struct gpiod_line *)gpio_binding->__line_handle, value);
 }
 
 int dx_gpioStateGet(DX_GPIO_BINDING *gpio_binding)
@@ -159,10 +130,9 @@ int dx_gpioStateGet(DX_GPIO_BINDING *gpio_binding)
         return false;
     }
 
-    unsigned int offset = gpio_binding->line_number;
-    enum gpiod_line_value value = gpiod_line_request_get_value((struct gpiod_line_request *)gpio_binding->__line_handle, offset);
+    int value = gpiod_line_get_value((struct gpiod_line *)gpio_binding->__line_handle);
     
-    return (value == GPIOD_LINE_VALUE_ACTIVE) ? 1 : 0;
+    return (value > 0) ? 1 : 0;
 }
 
 void dx_gpioSetOpen(DX_GPIO_BINDING **gpio_bindings, size_t gpio_bindings_count)
