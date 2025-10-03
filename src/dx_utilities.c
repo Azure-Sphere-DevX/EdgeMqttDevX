@@ -269,11 +269,11 @@ bool dx_startThreadDetached(void *(*daemon)(void *), void *arg, char *daemon_nam
 
     pthread_t thread;
 
-    printf("Starting thread %s detached\n", daemon_name);
+    dx_Log_Debug("Starting thread %s detached\n", daemon_name);
 
     if (pthread_create(&thread, &attr, daemon, arg))
     {
-        printf("ERROR: Failed to start %s daemon.\n", daemon_name);
+        dx_Log_Debug("ERROR: Failed to start %s daemon.\n", daemon_name);
         return false;
     }
     return true;
