@@ -30,6 +30,10 @@ bool dx_jsonSerialize(char *buffer, size_t buffer_size, int key_value_pair_count
             json_object_set_number(root_object, key, va_arg(valist, int));
             break;
 
+        case DX_JSON_LONG:
+            json_object_set_number(root_object, key, (double)va_arg(valist, long));
+            break;
+
             // floats are cast to doubles for valists
         case DX_JSON_FLOAT:
         case DX_JSON_DOUBLE:

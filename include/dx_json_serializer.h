@@ -7,6 +7,7 @@ typedef enum {
 	DX_JSON_BOOL,
 	DX_JSON_STRING,
     DX_JSON_INT,
+    DX_JSON_LONG,
     DX_JSON_FLOAT,
     DX_JSON_DOUBLE
 } DX_JSON_TYPE;
