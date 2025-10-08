@@ -35,6 +35,7 @@ static pthread_t _client_daemon = 0;
 static bool _is_initialized     = false;
 static bool _is_connected       = false;
 static bool _daemon_running     = false;
+static bool _daemon_created     = false; // Track if daemon thread has been created
 
 // Buffers for MQTT client
 static uint8_t _send_buffer[2048];
@@ -47,16 +48,12 @@ static void *_user_context                               = NULL;
 // Error tracking
 static char _last_error[256] = {0};
 
-// Retry configuration
-static DX_MQTT_CONFIG _saved_config = {0};
-
 // Function prototypes
 static void publish_callback(void **unused, struct mqtt_response_publish *published);
 static void *client_refresher(void *client);
 static bool cleanup_connection(void);
 static void set_last_error(const char *format, ...);
 static int open_nb_socket(const char *addr, const char *port);
-static void save_connection_config(const DX_MQTT_CONFIG *config);
 
 /// <summary>
 /// MQTT publish callback - called when a message is received
@@ -94,8 +91,6 @@ static void publish_callback(void **unused, struct mqtt_response_publish *publis
 /// <returns>NULL</returns>
 static void *client_refresher(void *client)
 {
-    _daemon_running = true;
-
     dx_Log_Debug("DX MQTT: Background processing thread started\n");
 
     while (_daemon_running)
@@ -126,7 +121,6 @@ static void *client_refresher(void *client)
         usleep(100000U);
     }
 
-    _daemon_running = false;
     dx_Log_Debug("DX MQTT: Background processing thread stopped\n");
     return NULL;
 }
@@ -147,24 +141,12 @@ static void set_last_error(const char *format, ...)
 }
 
 /// <summary>
-/// Clean up MQTT connection resources
+/// Clean up MQTT connection resources (but not the daemon thread)
 /// </summary>
 /// <returns>True on success</returns>
 static bool cleanup_connection(void)
 {
     bool success = true;
-
-    // Stop the client daemon
-    if (_daemon_running)
-    {
-        _daemon_running = false;
-        if (_client_daemon != 0)
-        {
-            pthread_cancel(_client_daemon);
-            pthread_join(_client_daemon, NULL);
-            _client_daemon = 0;
-        }
-    }
 
     // Close socket
     if (_sockfd != -1)
@@ -203,9 +185,6 @@ bool dx_mqttConnect(const DX_MQTT_CONFIG *config, DX_MQTT_MESSAGE_RECEIVED_HANDL
     // Store message handler and context
     _message_handler = message_handler;
     _user_context    = context;
-
-    // Save configuration for potential retries
-    save_connection_config(config);
 
     // Set defaults
     const char *port      = config->port ? config->port : "1883";
@@ -249,18 +228,25 @@ bool dx_mqttConnect(const DX_MQTT_CONFIG *config, DX_MQTT_MESSAGE_RECEIVED_HANDL
         return false;
     }
 
-    // Start client daemon thread for automatic background processing
-    if (pthread_create(&_client_daemon, NULL, client_refresher, &_client) != 0)
+    // Start client daemon thread for automatic background processing (only once)
+    if (!_daemon_created)
     {
-        set_last_error("Failed to start MQTT background processing thread");
-        cleanup_connection();
-        return false;
+        _daemon_running = true; // Set this before creating the thread
+        if (pthread_create(&_client_daemon, NULL, client_refresher, &_client) != 0)
+        {
+            set_last_error("Failed to start MQTT background processing thread");
+            _daemon_running = false;
+            cleanup_connection();
+            return false;
+        }
+        _daemon_created = true;
+        dx_Log_Debug("DX MQTT: Created background processing thread\n");
     }
 
     _is_initialized = true;
     _is_connected   = true;
 
-    dx_Log_Debug("DX MQTT: Successfully connected to %s:%s with automatic background processing\n", config->hostname, port);
+    dx_Log_Debug("DX MQTT: Successfully connected to %s:%s\n", config->hostname, port);
     return true;
 }
 
@@ -441,7 +427,20 @@ void dx_mqttDisconnect(void)
         mqtt_disconnect(&_client);
     }
 
-    // Cleanup all resources
+    // Stop the daemon thread
+    if (_daemon_created && _daemon_running)
+    {
+        _daemon_running = false;
+        if (_client_daemon != 0)
+        {
+            pthread_join(_client_daemon, NULL);
+            _client_daemon  = 0;
+            _daemon_created = false;
+            dx_Log_Debug("DX MQTT: Stopped background processing thread\n");
+        }
+    }
+
+    // Cleanup connection resources
     cleanup_connection();
 
     // Clear error state
@@ -549,56 +548,4 @@ static int open_nb_socket(const char *addr, const char *port)
     }
 
     return sockfd;
-}
-
-/// <summary>
-/// Save connection configuration for retry attempts
-/// </summary>
-/// <param name="config">MQTT configuration to save</param>
-static void save_connection_config(const DX_MQTT_CONFIG *config)
-{
-    // Note: We need to duplicate strings since the original config may be freed
-    static char hostname_buffer[256];
-    static char port_buffer[16];
-    static char client_id_buffer[256];
-    static char username_buffer[256];
-    static char password_buffer[256];
-
-    if (config->hostname)
-    {
-        strncpy(hostname_buffer, config->hostname, sizeof(hostname_buffer) - 1);
-        hostname_buffer[sizeof(hostname_buffer) - 1] = '\0';
-        _saved_config.hostname                       = hostname_buffer;
-    }
-
-    if (config->port)
-    {
-        strncpy(port_buffer, config->port, sizeof(port_buffer) - 1);
-        port_buffer[sizeof(port_buffer) - 1] = '\0';
-        _saved_config.port                   = port_buffer;
-    }
-
-    if (config->client_id)
-    {
-        strncpy(client_id_buffer, config->client_id, sizeof(client_id_buffer) - 1);
-        client_id_buffer[sizeof(client_id_buffer) - 1] = '\0';
-        _saved_config.client_id                        = client_id_buffer;
-    }
-
-    if (config->username)
-    {
-        strncpy(username_buffer, config->username, sizeof(username_buffer) - 1);
-        username_buffer[sizeof(username_buffer) - 1] = '\0';
-        _saved_config.username                       = username_buffer;
-    }
-
-    if (config->password)
-    {
-        strncpy(password_buffer, config->password, sizeof(password_buffer) - 1);
-        password_buffer[sizeof(password_buffer) - 1] = '\0';
-        _saved_config.password                       = password_buffer;
-    }
-
-    _saved_config.keep_alive_seconds = config->keep_alive_seconds;
-    _saved_config.clean_session      = config->clean_session;
 }
