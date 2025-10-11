@@ -8,6 +8,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
+#include <stdatomic.h>
+
+// High-precision monotonic timer state for millisecond tick count calculation
+static uint64_t timer_start_time_ns = 0;
 
 bool dx_timerChange(DX_TIMER_BINDING *timer, const struct timespec *repeat)
 {
@@ -133,4 +137,53 @@ void dx_eventLoopRun(void)
 void dx_eventLoopStop(void)
 {
 	uv_stop(uv_default_loop());
+}
+
+/// <summary>
+/// Initialize monotonic timer system for high-precision millisecond tracking
+/// Call this once at startup before using dx_updateMonotonicMillisecondTick()
+/// </summary>
+/// <param name="tick_count_ptr">Pointer to the atomic millisecond tick counter to initialize</param>
+void dx_initMonotonicMillisecondTimer(atomic_uint_fast64_t *tick_count_ptr)
+{
+    timer_start_time_ns = uv_hrtime();
+    
+    // Initialize the tick count to 0
+    atomic_store_explicit(tick_count_ptr, 0, memory_order_relaxed);
+}
+
+/// <summary>
+/// Update millisecond tick count using high-precision monotonic clock
+/// This function is optimized for performance and eliminates timer drift
+/// 
+/// PERFORMANCE BENEFITS:
+/// - Uses uv_hrtime() nanosecond precision monotonic timing (no drift)
+/// - Single atomic store operation (no fetch_add overhead)
+/// - Branch-prediction friendly (single fast path)
+/// - Compiler can optimize division by constant (1,000,000)
+/// 
+/// ACCURACY BENEFITS:  
+/// - Immune to timer scheduling delays or system load
+/// - Monotonic clock never goes backward (immune to system clock changes)
+/// - Nanosecond precision provides microsecond-accurate millisecond values
+/// - Eliminates cumulative drift from timer inaccuracies
+/// </summary>
+/// <param name="tick_count_ptr">Pointer to the atomic millisecond tick counter to update</param>
+void dx_updateMonotonicMillisecondTick(atomic_uint_fast64_t *tick_count_ptr)
+{
+    if (tick_count_ptr == NULL) {
+        return; // Invalid pointer
+    }
+    
+    // Get current monotonic time in nanoseconds
+    uint64_t current_time_ns = uv_hrtime();
+    
+    // Calculate elapsed milliseconds since initialization
+    // Division by 1,000,000 converts nanoseconds to milliseconds
+    // This is optimized by compiler to a fast integer operation
+    uint64_t elapsed_ms = (current_time_ns - timer_start_time_ns) / 1000000ULL;
+    
+    // Atomically update the tick count with the calculated value
+    // Uses relaxed ordering for maximum performance in high-frequency updates
+    atomic_store_explicit(tick_count_ptr, elapsed_ms, memory_order_relaxed);
 }
