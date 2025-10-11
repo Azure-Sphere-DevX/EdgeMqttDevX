@@ -46,5 +46,5 @@ void dx_timerStop(DX_TIMER_BINDING *timer);
 
 // High-precision monotonic millisecond timer functions
 // These functions provide drift-free timing using uv_hrtime() monotonic clock
-void dx_initMonotonicMillisecondTimer(atomic_uint_fast64_t *tick_count_ptr);
-void dx_updateMonotonicMillisecondTick(atomic_uint_fast64_t *tick_count_ptr);
+void dx_initMonotonicMillisecondTimer(void);
+uint64_t dx_getElapsedMilliseconds(void);
