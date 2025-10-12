@@ -20,8 +20,9 @@
 
 static char *_log_debug_buffer = NULL;
 static size_t _log_debug_buffer_size;
-static volatile bool network_timer_initialised = false;
+static bool network_timer_initialised = false;
 static bool network_connected_cached = false;
+static pthread_mutex_t network_timer_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static const char end_to_end_test_url[] = "http://www.msftconnecttest.com";
 
@@ -53,9 +54,13 @@ bool dx_isStringNullOrEmpty(const char *string)
 /// </summary>
 /// <param name="data"></param>
 /// <returns></returns>
-bool dx_isStringPrintable(char *data)
+bool dx_isStringPrintable(const char *data)
 {
-    while (isprint(*data))
+    if (data == NULL) {
+        return false;
+    }
+    
+    while (isprint((unsigned char)*data))
     {
         data++;
     }
@@ -89,6 +94,10 @@ char *dx_getHttpData(const char *url, long timeout)
     CURL *curl_handle;
     CURLcode res;
 
+    if (url == NULL) {
+        return NULL;
+    }
+
     if (!curl_initialized) {
         curl_global_init(CURL_GLOBAL_ALL);
         curl_initialized = true;
@@ -97,10 +106,17 @@ char *dx_getHttpData(const char *url, long timeout)
     struct MemoryStruct chunk;
 
     chunk.memory = malloc(1); /* will be grown as needed by the realloc above */
+    if (chunk.memory == NULL) {
+        return NULL;
+    }
     chunk.size = 0;           /* no data at this point */
 
     /* init the curl session */
     curl_handle = curl_easy_init();
+    if (curl_handle == NULL) {
+        free(chunk.memory);
+        return NULL;
+    }
 
     /* specify URL to get */
     curl_easy_setopt(curl_handle, CURLOPT_URL, url);
@@ -175,11 +191,13 @@ bool dx_isNetworkConnected(const char *networkInterface)
     bool network_ready = false;
     char *network_connected_result = NULL;
 
+    pthread_mutex_lock(&network_timer_mutex);
     if (!network_timer_initialised)
     {
         network_timer_initialised = true;
         dx_timerStart(&tmr_network_connected_cached);
     }
+    pthread_mutex_unlock(&network_timer_mutex);
 
     if (!(network_ready = dx_isNetworkReady())){
         return network_ready;
@@ -229,25 +247,61 @@ bool dx_isDeviceAuthReady(void)
 
 char *dx_getCurrentUtc(char *buffer, size_t bufferSize)
 {
+    if (buffer == NULL || bufferSize == 0) {
+        return NULL;
+    }
+    
     time_t now = time(NULL);
     struct tm *t = gmtime(&now);
-    strftime(buffer, bufferSize - 1, "%Y-%m-%dT%H:%M:%SZ", t);
+    if (t == NULL) {
+        return NULL;
+    }
+    
+    if (strftime(buffer, bufferSize, "%Y-%m-%dT%H:%M:%SZ", t) == 0) {
+        return NULL;
+    }
     return buffer;
 }
 
 char *dx_getLocalTime(char *buffer, size_t bufferSize)
 {
+    if (buffer == NULL || bufferSize == 0) {
+        return NULL;
+    }
+    
     time_t now = time(NULL);
     struct tm *t = localtime(&now);
-    strftime(buffer, bufferSize - 1, "%Y-%m-%dT%H:%M:%SZ", t);
+    if (t == NULL) {
+        return NULL;
+    }
+    
+    if (strftime(buffer, bufferSize, "%Y-%m-%dT%H:%M:%SZ", t) == 0) {
+        return NULL;
+    }
     return buffer;
 }
 
 int64_t dx_getNowMilliseconds(void)
 {
     struct timespec now = {0, 0};
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return now.tv_sec * 1000 + now.tv_nsec / 1000000;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+        return -1; // Error getting time
+    }
+    
+    // Check for overflow when converting seconds to milliseconds
+    if (now.tv_sec > INT64_MAX / 1000) {
+        return INT64_MAX; // Clamp to maximum value
+    }
+    
+    int64_t sec_ms = (int64_t)now.tv_sec * 1000;
+    int64_t nsec_ms = now.tv_nsec / 1000000;
+    
+    // Check for overflow when adding nanosecond component
+    if (sec_ms > INT64_MAX - nsec_ms) {
+        return INT64_MAX; // Clamp to maximum value
+    }
+    
+    return sec_ms + nsec_ms;
 }
 
 int dx_stringEndsWith(const char *str, const char *suffix)
@@ -261,8 +315,12 @@ int dx_stringEndsWith(const char *str, const char *suffix)
     return strncmp(str + lenstr - lensuffix, suffix, lensuffix) == 0;
 }
 
-bool dx_startThreadDetached(void *(*daemon)(void *), void *arg, char *daemon_name)
+bool dx_startThreadDetached(void *(*daemon)(void *), void *arg, const char *daemon_name)
 {
+    if (daemon == NULL || daemon_name == NULL) {
+        return false;
+    }
+    
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
@@ -274,8 +332,11 @@ bool dx_startThreadDetached(void *(*daemon)(void *), void *arg, char *daemon_nam
     if (pthread_create(&thread, &attr, daemon, arg))
     {
         dx_Log_Debug("ERROR: Failed to start %s daemon.\n", daemon_name);
+        pthread_attr_destroy(&attr);
         return false;
     }
+    
+    pthread_attr_destroy(&attr);
     return true;
 }
 
@@ -285,11 +346,17 @@ void dx_Log_Debug_Init(char *buffer, size_t buffer_size)
     _log_debug_buffer_size = buffer_size;
 }
 
-void dx_Log_Debug(char *fmt, ...)
+void dx_Log_Debug(const char *fmt, ...)
 {
     if (_log_debug_buffer == NULL)
     {
         printf("log_debug_buffer is NULL. Call Log_Debug_Time_Init first");
+        return;
+    }
+    
+    if (fmt == NULL)
+    {
+        printf("Format string is NULL");
         return;
     }
 

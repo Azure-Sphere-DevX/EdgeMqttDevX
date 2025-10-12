@@ -40,7 +40,7 @@ bool dx_timerOneShotSet(DX_TIMER_BINDING *timer, const struct timespec *delay);
 bool dx_timerStart(DX_TIMER_BINDING *timer);
 bool dx_timerStateSet(DX_TIMER_BINDING *timer, bool state);
 void dx_timerEventLoopStop(void);
-void dx_timerSetStart(DX_TIMER_BINDING *timerSet[], size_t timerCount);
+bool dx_timerSetStart(DX_TIMER_BINDING *timerSet[], size_t timerCount);
 void dx_timerSetStop(DX_TIMER_BINDING *timerSet[], size_t timerCount);
 void dx_timerStop(DX_TIMER_BINDING *timer);
 
